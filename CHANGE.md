@@ -26,3 +26,4 @@
 | 2026-03-09 | public/styles.css / public/index.html | Redesign | 无 | 全面重设计 UI 为暗黑精密仪器美学：void 深黑底色、单一陈年铜金强调色、Fraunces 巨型数字、IBM Plex Mono 日志字体、发丝级玻璃面板、顶边光泽高光、交错渐入动画 | 从暖纸色系升级为极简奢华 dark luxury 风格 | 本次会话 |
 | 2026-03-09 | public/styles.css / public/index.html | Fix+Feat | 无 | 修复深色背景下文字对比度（text-2/3/4 透明度上调）、select 下拉深色适配（color-scheme: dark + 固定背景色）、新增顶部导航栏（首页/使用帮助 Tab）、新增完整使用帮助页（6节教程+FAQ折叠） | 可用性大幅提升，完成使用文档闭环 | 本次会话 |
 | 2026-03-09 | README.md / LICENSE | Add | 无 | 撰写完整开源 README（快速开始、Token 获取、用法、环境变量、项目结构、技术栈）；新增 MIT License；独立初始化 git repo 并推送至 github.com/hengfengliya/Cloudflare-Mail-Forge | 项目正式开源 | 本次会话 |
+| 2026-03-09 | README.md / docs/README_EN.md / docs/linuxdo-post.md | Add | 无 | README 改写为中文默认 + EN badge 链接；新建 docs/ 目录；添加完整英文文档；添加 LinuxDo 社区发帖草稿 | 完成双语文档体系，准备社区推广 | 本次会话 |
