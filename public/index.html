@@ -137,6 +137,11 @@
               <span class="meta-text">一组 local-part，可同时打到多个域名</span>
             </div>
             <form id="batch-form" class="stack-form">
+              <label>
+                <span>转发目标邮箱</span>
+                <input id="batchDestination" type="email" placeholder="name@example.com" required />
+              </label>
+
               <div class="mode-switch" role="tablist" aria-label="创建模式">
                 <button class="mode-chip active" data-mode="pattern" type="button">前缀/随机批量</button>
                 <button class="mode-chip" data-mode="manual" type="button">手动地址清单</button>

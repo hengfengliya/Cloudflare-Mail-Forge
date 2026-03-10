@@ -27,6 +27,7 @@ const state = {
 
 const elements = {
   activeZone: document.querySelector("#active-zone"),
+  batchDestination: document.querySelector("#batchDestination"),
   batchEnabled: document.querySelector("#batchEnabled"),
   batchForm: document.querySelector("#batch-form"),
   batchStart: document.querySelector("#batchStart"),
@@ -118,6 +119,7 @@ function fillConfigForm(config) {
   elements.defaultCount.value = config.defaultCount ?? 5;
   elements.defaultStart.value = config.defaultStart ?? 1;
   elements.delayMs.value = config.delayMs ?? 0;
+  elements.batchDestination.value = config.destinationEmail || "";
   elements.batchPrefix.value = config.defaultPrefix || "";
   elements.batchCount.value = config.defaultCount ?? 5;
   elements.batchStart.value = config.defaultStart ?? 1;
@@ -389,7 +391,7 @@ async function createBatch(event) {
   try {
     const payload = {
       targets,
-      destinationEmail: elements.destinationEmail.value.trim(),
+      destinationEmail: elements.batchDestination.value.trim() || elements.destinationEmail.value.trim(),
       mode: state.mode,
       manualInput: elements.manualInput.value,
       prefix: elements.batchPrefix.value.trim(),
