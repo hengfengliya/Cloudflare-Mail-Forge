@@ -31,15 +31,37 @@ Cloudflare 控制台只能逐条管理邮件路由规则。当你有多个域名
 
 ## 快速开始
 
+### 方式一：Node.js 直接运行
+
 ```bash
 git clone https://github.com/hengfengliya/Cloudflare-Mail-Forge.git
 cd Cloudflare-Mail-Forge
 node server.js
 ```
 
-打开浏览器访问 **http://127.0.0.1:3042**
+> **零依赖** — 不需要 `npm install`，Node.js 18+ 直接运行。
 
-> **零依赖** — 不需要 `npm install`，Node.js 内置模块直接运行。
+### 方式二：Docker
+
+```bash
+docker run -p 3042:3042 ghcr.io/hengfengliya/cloudflare-mail-forge
+```
+
+或用 Docker Compose：
+
+```bash
+git clone https://github.com/hengfengliya/Cloudflare-Mail-Forge.git
+cd Cloudflare-Mail-Forge
+docker compose up -d
+```
+
+### 方式三：Vercel 在线版
+
+直接访问 **https://cloudflare-mail-forge.vercel.app**，无需任何安装。
+
+---
+
+打开浏览器访问 **http://127.0.0.1:3042**（本地部署）
 
 ---
 
@@ -115,6 +137,8 @@ node server.js
 ├── data/               # 运行时配置（已 gitignore）
 ├── legacy/             # 归档脚本（Python / PowerShell）
 ├── server.js           # 本地 HTTP 服务入口
+├── Dockerfile          # Docker 镜像构建
+├── docker-compose.yml  # Docker Compose 一键启动
 └── .env.example        # 环境变量模板
 ```
 
@@ -133,10 +157,10 @@ node server.js
 
 ## 安全说明
 
-- 服务默认只绑定 `127.0.0.1`，局域网无法访问
-- 配置（含 Token）保存在本地 `data/app-config.json`（已加入 `.gitignore`）
+- 配置（含 Token）只保存在**浏览器 localStorage**，不写入任何文件或数据库
+- 本地部署版服务默认只绑定 `127.0.0.1`，局域网无法访问
 - 不向任何第三方服务发送数据
-- 如需部署到远程服务器，请自行添加访问鉴权
+- 如需将 Docker 版暴露到公网，请自行在反向代理层添加访问鉴权
 
 ---
 

@@ -1,0 +1,14 @@
+services:
+  mail-forge:
+    build: .
+    ports:
+      - "3042:3042"
+    environment:
+      # Optional env-var defaults — you can also configure everything in the browser UI
+      # CF_TOKEN: your_cloudflare_api_token
+      # CF_DESTINATION: you@gmail.com
+      # CF_DEFAULT_PREFIX: tmp
+      # CF_DEFAULT_COUNT: 5
+      # CF_DEFAULT_START: 1
+      # CF_DELAY_MS: 200
+    restart: unless-stopped
