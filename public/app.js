@@ -1,7 +1,23 @@
+// Config is stored in localStorage ("mf_config") so it works on both
+// local Node.js server and Vercel (stateless serverless).
+// Every API call passes the token via the X-CF-Token request header.
+
+const CONFIG_KEY = "mf_config";
+
+const DEFAULT_CONFIG = {
+  token: "",
+  destinationEmail: "",
+  defaultPrefix: "",
+  defaultCount: 5,
+  defaultStart: 1,
+  delayMs: 0,
+  selectedZoneIds: [],
+};
+
 const state = {
   activeZoneId: "",
   batchCreatedCount: 0,
-  config: null,
+  config: { ...DEFAULT_CONFIG },
   mode: "pattern",
   rules: [],
   selectedRuleIds: new Set(),
@@ -47,6 +63,7 @@ const elements = {
   zoneSearch: document.querySelector("#zone-search"),
 };
 
+// ── Logging ───────────────────────────────────────────────
 function log(message, tone = "info") {
   const item = document.createElement("article");
   item.className = `log-entry ${tone}`;
@@ -62,10 +79,13 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+// ── API ───────────────────────────────────────────────────
 async function request(path, options = {}) {
+  const token = state.config?.token || "";
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { "X-CF-Token": token } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -77,6 +97,7 @@ async function request(path, options = {}) {
   return data;
 }
 
+// ── Config (localStorage) ─────────────────────────────────
 function readConfigForm() {
   return {
     token: elements.token.value.trim(),
@@ -101,6 +122,34 @@ function fillConfigForm(config) {
   elements.batchStart.value = config.defaultStart ?? 1;
 }
 
+function loadConfig() {
+  try {
+    const stored = localStorage.getItem(CONFIG_KEY);
+    const config = stored ? { ...DEFAULT_CONFIG, ...JSON.parse(stored) } : { ...DEFAULT_CONFIG };
+    state.config = config;
+    state.selectedZoneIds = new Set(config.selectedZoneIds || []);
+    fillConfigForm(config);
+    updateStats();
+  } catch {
+    state.config = { ...DEFAULT_CONFIG };
+    state.selectedZoneIds = new Set();
+  }
+}
+
+function saveConfig(announce = true) {
+  const config = readConfigForm();
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+  } catch {
+    // localStorage unavailable (private browsing edge case)
+  }
+  state.config = config;
+  if (announce) {
+    log("控制台配置已保存。", "success");
+  }
+}
+
+// ── Stats ─────────────────────────────────────────────────
 function updateStats() {
   elements.statZoneCount.textContent = String(state.zones.length);
   elements.statSelectedCount.textContent = String(state.selectedZoneIds.size);
@@ -108,11 +157,10 @@ function updateStats() {
   elements.statBatchCount.textContent = String(state.batchCreatedCount);
 }
 
+// ── Zones ─────────────────────────────────────────────────
 function visibleZones() {
   const keyword = elements.zoneSearch.value.trim().toLowerCase();
-  if (!keyword) {
-    return state.zones;
-  }
+  if (!keyword) return state.zones;
   return state.zones.filter((zone) => zone.name.toLowerCase().includes(keyword));
 }
 
@@ -160,7 +208,7 @@ function renderZones() {
       if (!state.activeZoneId && state.selectedZoneIds.size > 0) {
         state.activeZoneId = [...state.selectedZoneIds][0];
       }
-      await saveConfig(false);
+      saveConfig(false);
       renderZones();
       renderZoneSelect();
       updateBatchHint();
@@ -178,8 +226,8 @@ function renderZones() {
 }
 
 function renderZoneSelect() {
-  const preferredZones = state.zones.filter((zone) => state.selectedZoneIds.has(zone.id));
-  const list = preferredZones.length > 0 ? preferredZones : state.zones;
+  const preferred = state.zones.filter((zone) => state.selectedZoneIds.has(zone.id));
+  const list = preferred.length > 0 ? preferred : state.zones;
 
   elements.activeZone.innerHTML = "";
   if (list.length === 0) {
@@ -208,15 +256,14 @@ function updateBatchHint() {
   const selected = state.zones.filter((zone) => state.selectedZoneIds.has(zone.id));
   elements.batchTargetHint.textContent =
     selected.length > 0
-      ? `将写入 ${selected.length} 个域名: ${selected.map((zone) => zone.name).join(", ")}`
+      ? `将写入 ${selected.length} 个域名: ${selected.map((z) => z.name).join(", ")}`
       : "未选择域名";
 }
 
+// ── Rules ─────────────────────────────────────────────────
 function filteredRules() {
   const keyword = elements.ruleSearch.value.trim().toLowerCase();
-  if (!keyword) {
-    return state.rules;
-  }
+  if (!keyword) return state.rules;
   return state.rules.filter((rule) => {
     const haystack = [rule.address, rule.name, ...(rule.destinations || [])].join(" ").toLowerCase();
     return haystack.includes(keyword);
@@ -225,7 +272,7 @@ function filteredRules() {
 
 function renderRules() {
   const rules = filteredRules();
-  state.selectedRuleIds = new Set([...state.selectedRuleIds].filter((id) => rules.some((rule) => rule.id === id)));
+  state.selectedRuleIds = new Set([...state.selectedRuleIds].filter((id) => rules.some((r) => r.id === id)));
   elements.rulesBody.innerHTML = "";
 
   if (!state.activeZoneId) {
@@ -277,9 +324,7 @@ function renderRules() {
 
   document.querySelectorAll("[data-rule-toggle]").forEach((button) => {
     button.addEventListener("click", async (event) => {
-      const ruleId = event.currentTarget.dataset.ruleToggle;
-      const enabled = event.currentTarget.dataset.enabled === "true";
-      await toggleRule(ruleId, enabled);
+      await toggleRule(event.currentTarget.dataset.ruleToggle, event.currentTarget.dataset.enabled === "true");
     });
   });
 
@@ -292,32 +337,13 @@ function renderRules() {
   updateStats();
 }
 
-async function saveConfig(announce = true) {
-  const payload = readConfigForm();
-  const data = await request("/api/config", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-  state.config = data.config;
-  if (announce) {
-    log("控制台配置已保存。", "success");
-  }
-}
-
-async function loadConfig() {
-  const data = await request("/api/config");
-  state.config = data.config;
-  state.selectedZoneIds = new Set(data.config.selectedZoneIds || []);
-  fillConfigForm(data.config);
-  updateStats();
-}
-
+// ── API Actions ───────────────────────────────────────────
 async function checkHealth() {
   try {
     await request("/api/health");
     elements.healthBadge.textContent = "本地服务正常";
   } catch {
-    elements.healthBadge.textContent = "本地服务异常";
+    elements.healthBadge.textContent = "服务异常";
   }
 }
 
@@ -336,16 +362,13 @@ async function loadZones() {
 }
 
 async function loadRules() {
-  if (!state.activeZoneId) {
-    renderRules();
-    return;
-  }
+  if (!state.activeZoneId) { renderRules(); return; }
   try {
     const data = await request(`/api/rules?zoneId=${encodeURIComponent(state.activeZoneId)}`);
     state.rules = data.rules;
     state.selectedRuleIds.clear();
     renderRules();
-    const activeZone = state.zones.find((zone) => zone.id === state.activeZoneId);
+    const activeZone = state.zones.find((z) => z.id === state.activeZoneId);
     log(`已加载 ${activeZone?.name || "当前域名"} 的 ${data.rules.length} 条规则。`, "info");
   } catch (error) {
     state.rules = [];
@@ -360,10 +383,7 @@ async function createBatch(event) {
     .filter((zone) => state.selectedZoneIds.has(zone.id))
     .map((zone) => ({ zoneId: zone.id, domain: zone.name }));
 
-  if (targets.length === 0) {
-    log("请先选择至少一个域名。", "error");
-    return;
-  }
+  if (targets.length === 0) { log("请先选择至少一个域名。", "error"); return; }
 
   try {
     const payload = {
@@ -377,19 +397,14 @@ async function createBatch(event) {
       enabled: elements.batchEnabled.checked,
       delayMs: Number(elements.delayMs.value || 0),
     };
-    const data = await request("/api/rules/batch", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const data = await request("/api/rules/batch", { method: "POST", body: JSON.stringify(payload) });
     state.batchCreatedCount = data.summary.created;
     updateStats();
     log(
       `批量创建完成: 成功 ${data.summary.created} 条，失败 ${data.summary.failed} 条。`,
       data.summary.failed > 0 ? "info" : "success",
     );
-    if (state.activeZoneId) {
-      await loadRules();
-    }
+    if (state.activeZoneId) await loadRules();
   } catch (error) {
     log(`批量创建失败: ${error.message}`, "error");
   }
@@ -399,11 +414,7 @@ async function toggleRule(ruleId, enabled) {
   try {
     await request("/api/rules/toggle", {
       method: "PATCH",
-      body: JSON.stringify({
-        zoneId: state.activeZoneId,
-        ruleId,
-        enabled,
-      }),
+      body: JSON.stringify({ zoneId: state.activeZoneId, ruleId, enabled }),
     });
     log(`规则 ${ruleId} 已${enabled ? "启用" : "停用"}。`, "success");
     await loadRules();
@@ -413,19 +424,14 @@ async function toggleRule(ruleId, enabled) {
 }
 
 async function deleteRules(ruleIds) {
-  if (!state.activeZoneId || ruleIds.length === 0) {
-    return;
-  }
+  if (!state.activeZoneId || !ruleIds.length) return;
   try {
     const data = await request("/api/rules", {
       method: "DELETE",
-      body: JSON.stringify({
-        zoneId: state.activeZoneId,
-        ruleIds,
-      }),
+      body: JSON.stringify({ zoneId: state.activeZoneId, ruleIds }),
     });
-    const deleted = data.results.filter((item) => item.status === "deleted").length;
-    const failed = data.results.filter((item) => item.status === "failed").length;
+    const deleted = data.results.filter((r) => r.status === "deleted").length;
+    const failed = data.results.filter((r) => r.status === "failed").length;
     log(`删除完成: 成功 ${deleted} 条，失败 ${failed} 条。`, failed > 0 ? "info" : "success");
     await loadRules();
   } catch (error) {
@@ -437,15 +443,14 @@ function switchMode(mode) {
   state.mode = mode;
   elements.patternFields.classList.toggle("hidden", mode !== "pattern");
   elements.manualFields.classList.toggle("hidden", mode !== "manual");
-  elements.modeChips.forEach((button) => {
-    button.classList.toggle("active", button.dataset.mode === mode);
-  });
+  elements.modeChips.forEach((btn) => btn.classList.toggle("active", btn.dataset.mode === mode));
 }
 
+// ── Event Bindings ────────────────────────────────────────
 elements.configForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await saveConfig(true);
+    saveConfig(true);
     await loadZones();
   } catch (error) {
     log(`保存配置失败: ${error.message}`, "error");
@@ -464,7 +469,7 @@ elements.ruleSearch.addEventListener("input", renderRules);
 elements.selectAllRules.addEventListener("change", (event) => {
   const rules = filteredRules();
   if (event.currentTarget.checked) {
-    state.selectedRuleIds = new Set(rules.map((rule) => rule.id));
+    state.selectedRuleIds = new Set(rules.map((r) => r.id));
   } else {
     state.selectedRuleIds.clear();
   }
@@ -475,7 +480,7 @@ elements.deleteSelectedRules.addEventListener("click", async () => {
 });
 elements.selectVisibleZones.addEventListener("click", async () => {
   visibleZones().forEach((zone) => state.selectedZoneIds.add(zone.id));
-  await saveConfig(false);
+  saveConfig(false);
   renderZones();
   renderZoneSelect();
   updateBatchHint();
@@ -485,16 +490,15 @@ elements.clearLog.addEventListener("click", () => {
   elements.logList.innerHTML = "";
   log("日志已清空。", "info");
 });
-elements.modeChips.forEach((button) => {
-  button.addEventListener("click", () => {
-    switchMode(button.dataset.mode);
-  });
+elements.modeChips.forEach((btn) => {
+  btn.addEventListener("click", () => switchMode(btn.dataset.mode));
 });
 
+// ── Boot ──────────────────────────────────────────────────
 async function boot() {
   switchMode("pattern");
   await checkHealth();
-  await loadConfig();
+  loadConfig();
   if (state.config?.token) {
     await loadZones();
     if (state.selectedZoneIds.size > 0) {

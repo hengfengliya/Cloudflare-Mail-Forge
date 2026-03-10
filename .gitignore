@@ -1,7 +1,8 @@
 .env
-data/app-config.json
+data/
+node_modules
+.vercel
 email_list.csv
 result.csv
-node_modules
 legacy/.history/
 legacy/scripts/__pycache__/

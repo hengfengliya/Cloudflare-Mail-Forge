@@ -1,3 +1,8 @@
+// Local development server — mirrors the Vercel api/ functions.
+// Token is read from the X-CF-Token request header (same as Vercel).
+// Config persistence is handled by the browser (localStorage); this
+// server only keeps env-var defaults for convenience.
+
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -11,15 +16,14 @@ import {
   listZones,
   updateRoutingRule,
 } from "./src/cloudflare.js";
-import { loadConfig, saveConfig } from "./src/config-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, "public");
-const HOST = process.env.APP_HOST || "127.0.0.1";
-const PORT = Number(process.env.APP_PORT || 3042);
+const HOST = process.env.HOST || "127.0.0.1";
+const PORT = Number(process.env.PORT || 3042);
 
-const MIME_TYPES = {
+const MIME = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
@@ -28,30 +32,19 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
 };
 
-function sendJson(res, statusCode, payload) {
-  res.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
+function sendJson(res, status, payload) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(JSON.stringify(payload));
 }
 
-function sendError(res, statusCode, message, details) {
-  sendJson(res, statusCode, {
-    ok: false,
-    error: message,
-    details: details || null,
-  });
+function sendError(res, status, message) {
+  sendJson(res, status, { ok: false, error: message });
 }
 
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-  if (chunks.length === 0) {
-    return {};
-  }
+  for await (const chunk of req) chunks.push(chunk);
+  if (!chunks.length) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
   } catch {
@@ -59,281 +52,171 @@ async function readBody(req) {
   }
 }
 
-function ensureToken(config) {
-  if (!config.token) {
-    throw new Error("请先在配置区保存 Cloudflare API Token");
-  }
+function requireToken(req) {
+  const token = (req.headers["x-cf-token"] || "").trim();
+  if (!token) throw new Error("请先在配置区保存 Cloudflare API Token");
+  return token;
 }
 
 function normalizeList(input) {
-  if (!input) {
-    return [];
-  }
+  if (!input) return [];
   return Array.from(
-    new Set(
-      String(input)
-        .split(/[\n,\s]+/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
+    new Set(String(input).split(/[\n,\s]+/).map((s) => s.trim()).filter(Boolean)),
   );
 }
 
-function randomLocalPart(length = 8) {
-  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
-  return Array.from({ length }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+function randomLocalPart(len = 8) {
+  const abc = "abcdefghijklmnopqrstuvwxyz0123456789";
+  return Array.from({ length: len }, () => abc[Math.floor(Math.random() * abc.length)]).join("");
 }
 
 function createLocalParts(body) {
-  const mode = body.mode === "manual" ? "manual" : "pattern";
-  if (mode === "manual") {
+  if (body.mode === "manual") {
     const parts = normalizeList(body.manualInput);
-    if (parts.length === 0) {
-      throw new Error("手动模式下请至少输入一个 local-part 或完整邮箱");
-    }
+    if (!parts.length) throw new Error("手动模式下请至少输入一个 local-part 或完整邮箱");
     return parts;
   }
-
   const count = Number(body.count || 0);
   const start = Number(body.start || 1);
-  if (!Number.isInteger(count) || count <= 0) {
-    throw new Error("批量模式下 count 必须是正整数");
-  }
-  if (!Number.isInteger(start) || start <= 0) {
-    throw new Error("批量模式下 start 必须是正整数");
-  }
-
+  if (!Number.isInteger(count) || count <= 0) throw new Error("批量模式下 count 必须是正整数");
+  if (!Number.isInteger(start) || start <= 0) throw new Error("批量模式下 start 必须是正整数");
   const prefix = String(body.prefix || "").trim();
-  return Array.from({ length: count }, (_, index) => {
-    if (!prefix) {
-      return randomLocalPart();
-    }
-    return `${prefix}${start + index}`;
-  });
+  return Array.from({ length: count }, (_, i) => (prefix ? `${prefix}${start + i}` : randomLocalPart()));
 }
 
-function expandAddresses(localParts, targets) {
-  const results = [];
-  for (const target of targets) {
-    for (const localPart of localParts) {
-      results.push({
-        zoneId: target.zoneId,
-        zoneName: target.domain,
-        address: localPart.includes("@") ? localPart : `${localPart}@${target.domain}`,
-      });
-    }
-  }
-  return results;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 async function handleApi(req, res, url) {
   try {
+    // Health
     if (req.method === "GET" && url.pathname === "/api/health") {
-      sendJson(res, 200, { ok: true, host: HOST, port: PORT, now: new Date().toISOString() });
-      return;
+      return sendJson(res, 200, { ok: true, host: HOST, port: PORT, now: new Date().toISOString() });
     }
 
-    if (req.method === "GET" && url.pathname === "/api/config") {
-      const config = await loadConfig();
-      sendJson(res, 200, { ok: true, config });
-      return;
+    // Config — env-var defaults on GET, no-op echo on PUT
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") {
+        return sendJson(res, 200, {
+          ok: true,
+          config: {
+            token: process.env.CF_TOKEN || "",
+            destinationEmail: process.env.CF_DESTINATION || "",
+            defaultPrefix: process.env.CF_DEFAULT_PREFIX || "",
+            defaultCount: Number(process.env.CF_DEFAULT_COUNT || 5),
+            defaultStart: Number(process.env.CF_DEFAULT_START || 1),
+            delayMs: Number(process.env.CF_DELAY_MS || 0),
+            selectedZoneIds: [],
+          },
+        });
+      }
+      if (req.method === "PUT") {
+        const body = await readBody(req);
+        return sendJson(res, 200, { ok: true, config: body });
+      }
     }
 
-    if (req.method === "PUT" && url.pathname === "/api/config") {
-      const body = await readBody(req);
-      const nextConfig = await saveConfig({
-        token: String(body.token || "").trim(),
-        destinationEmail: String(body.destinationEmail || "").trim(),
-        defaultPrefix: String(body.defaultPrefix || "").trim(),
-        defaultCount: Number(body.defaultCount || 5),
-        defaultStart: Number(body.defaultStart || 1),
-        delayMs: Number(body.delayMs || 0),
-        selectedZoneIds: Array.isArray(body.selectedZoneIds)
-          ? body.selectedZoneIds.map((item) => String(item).trim()).filter(Boolean)
-          : [],
-      });
-      sendJson(res, 200, { ok: true, config: nextConfig });
-      return;
-    }
-
+    // Zones
     if (req.method === "GET" && url.pathname === "/api/zones") {
-      const config = await loadConfig();
-      ensureToken(config);
-      const zones = await listZones(config.token);
-      sendJson(res, 200, { ok: true, zones });
-      return;
+      const token = requireToken(req);
+      const zones = await listZones(token);
+      return sendJson(res, 200, { ok: true, zones });
     }
 
+    // Rules — list
     if (req.method === "GET" && url.pathname === "/api/rules") {
       const zoneId = url.searchParams.get("zoneId");
-      if (!zoneId) {
-        sendError(res, 400, "缺少 zoneId");
-        return;
-      }
-      const config = await loadConfig();
-      ensureToken(config);
-      const rules = await listRoutingRules(config.token, zoneId);
-      sendJson(res, 200, { ok: true, rules });
-      return;
+      if (!zoneId) return sendError(res, 400, "缺少 zoneId");
+      const token = requireToken(req);
+      const rules = await listRoutingRules(token, zoneId);
+      return sendJson(res, 200, { ok: true, rules });
     }
 
+    // Rules — batch create
     if (req.method === "POST" && url.pathname === "/api/rules/batch") {
+      const token = requireToken(req);
       const body = await readBody(req);
-      const config = await loadConfig();
-      ensureToken(config);
-
-      const destinationEmail = String(body.destinationEmail || config.destinationEmail || "").trim();
-      if (!destinationEmail) {
-        sendError(res, 400, "缺少 destinationEmail");
-        return;
-      }
-
+      const destinationEmail = String(body.destinationEmail || "").trim();
+      if (!destinationEmail) return sendError(res, 400, "缺少 destinationEmail");
       const targets = Array.isArray(body.targets)
-        ? body.targets
-            .map((item) => ({
-              zoneId: String(item.zoneId || "").trim(),
-              domain: String(item.domain || "").trim(),
-            }))
-            .filter((item) => item.zoneId && item.domain)
+        ? body.targets.map((t) => ({ zoneId: String(t.zoneId || "").trim(), domain: String(t.domain || "").trim() })).filter((t) => t.zoneId && t.domain)
         : [];
-
-      if (targets.length === 0) {
-        sendError(res, 400, "请先至少选择一个域名");
-        return;
-      }
-
+      if (!targets.length) return sendError(res, 400, "请先至少选择一个域名");
       const localParts = createLocalParts(body);
-      const addresses = expandAddresses(localParts, targets);
       const enabled = body.enabled !== false;
-      const delayMs = Math.max(0, Number(body.delayMs ?? config.delayMs ?? 0));
-
+      const delayMs = Math.max(0, Number(body.delayMs ?? 0));
       const results = [];
-      for (const item of addresses) {
-        try {
-          const rule = await createRoutingRule(config.token, item.zoneId, {
-            address: item.address,
-            destinationEmail,
-            enabled,
-          });
-          results.push({
-            zoneId: item.zoneId,
-            zoneName: item.zoneName,
-            address: item.address,
-            status: "created",
-            ruleId: rule.id || "",
-            message: "",
-          });
-        } catch (error) {
-          results.push({
-            zoneId: item.zoneId,
-            zoneName: item.zoneName,
-            address: item.address,
-            status: "failed",
-            ruleId: "",
-            message: error.message,
-          });
-        }
-        if (delayMs > 0) {
-          await sleep(delayMs);
+      for (const target of targets) {
+        for (const part of localParts) {
+          const address = part.includes("@") ? part : `${part}@${target.domain}`;
+          try {
+            const rule = await createRoutingRule(token, target.zoneId, { address, destinationEmail, enabled });
+            results.push({ zoneId: target.zoneId, zoneName: target.domain, address, status: "created", ruleId: rule.id || "", message: "" });
+          } catch (err) {
+            results.push({ zoneId: target.zoneId, zoneName: target.domain, address, status: "failed", ruleId: "", message: err.message });
+          }
+          if (delayMs > 0) await sleep(delayMs);
         }
       }
-
-      sendJson(res, 200, {
+      return sendJson(res, 200, {
         ok: true,
-        summary: {
-          total: results.length,
-          created: results.filter((item) => item.status === "created").length,
-          failed: results.filter((item) => item.status === "failed").length,
-        },
+        summary: { total: results.length, created: results.filter((r) => r.status === "created").length, failed: results.filter((r) => r.status === "failed").length },
         results,
       });
-      return;
     }
 
+    // Rules — delete
     if (req.method === "DELETE" && url.pathname === "/api/rules") {
+      const token = requireToken(req);
       const body = await readBody(req);
       const zoneId = String(body.zoneId || "").trim();
-      const ruleIds = Array.isArray(body.ruleIds)
-        ? body.ruleIds.map((item) => String(item).trim()).filter(Boolean)
-        : [];
-
-      if (!zoneId || ruleIds.length === 0) {
-        sendError(res, 400, "删除需要 zoneId 和 ruleIds");
-        return;
-      }
-
-      const config = await loadConfig();
-      ensureToken(config);
-
+      const ruleIds = Array.isArray(body.ruleIds) ? body.ruleIds.map(String).filter(Boolean) : [];
+      if (!zoneId || !ruleIds.length) return sendError(res, 400, "删除需要 zoneId 和 ruleIds");
       const results = [];
       for (const ruleId of ruleIds) {
         try {
-          await deleteRoutingRule(config.token, zoneId, ruleId);
+          await deleteRoutingRule(token, zoneId, ruleId);
           results.push({ ruleId, status: "deleted", message: "" });
-        } catch (error) {
-          results.push({ ruleId, status: "failed", message: error.message });
+        } catch (err) {
+          results.push({ ruleId, status: "failed", message: err.message });
         }
       }
-
-      sendJson(res, 200, { ok: true, results });
-      return;
+      return sendJson(res, 200, { ok: true, results });
     }
 
+    // Rules — toggle
     if (req.method === "PATCH" && url.pathname === "/api/rules/toggle") {
+      const token = requireToken(req);
       const body = await readBody(req);
       const zoneId = String(body.zoneId || "").trim();
       const ruleId = String(body.ruleId || "").trim();
       const enabled = Boolean(body.enabled);
-
-      if (!zoneId || !ruleId) {
-        sendError(res, 400, "启停需要 zoneId 和 ruleId");
-        return;
-      }
-
-      const config = await loadConfig();
-      ensureToken(config);
-      const currentRule = await getRoutingRule(config.token, zoneId, ruleId);
-      const updatedRule = await updateRoutingRule(config.token, zoneId, ruleId, {
-        actions: currentRule.actions || [],
+      if (!zoneId || !ruleId) return sendError(res, 400, "启停需要 zoneId 和 ruleId");
+      const current = await getRoutingRule(token, zoneId, ruleId);
+      const updated = await updateRoutingRule(token, zoneId, ruleId, {
+        actions: current.actions || [],
         enabled,
-        matchers: currentRule.matchers || [],
-        name: currentRule.name || `rule:${ruleId}`,
-        priority: currentRule.priority || 0,
+        matchers: current.matchers || [],
+        name: current.name || `rule:${ruleId}`,
+        priority: current.priority || 0,
       });
-
-      sendJson(res, 200, { ok: true, rule: updatedRule });
-      return;
+      return sendJson(res, 200, { ok: true, rule: updated });
     }
 
     sendError(res, 404, "API 路径不存在");
-  } catch (error) {
-    sendError(res, 500, error.message);
+  } catch (err) {
+    sendError(res, 500, err.message);
   }
 }
 
 async function serveStatic(res, url) {
-  const rawPath = url.pathname === "/" ? "/index.html" : url.pathname;
-  const normalizedPath = path.normalize(rawPath).replace(/^(\.\.[/\\])+/, "");
-  const filePath = path.join(PUBLIC_DIR, normalizedPath);
-
-  if (!filePath.startsWith(PUBLIC_DIR)) {
-    sendError(res, 403, "禁止访问该路径");
-    return;
-  }
-
+  const raw = url.pathname === "/" ? "/index.html" : url.pathname;
+  const normalized = path.normalize(raw).replace(/^(\.\.[/\\])+/, "");
+  const filePath = path.join(PUBLIC_DIR, normalized);
+  if (!filePath.startsWith(PUBLIC_DIR)) return sendError(res, 403, "禁止访问该路径");
   try {
     const content = await readFile(filePath);
     const ext = path.extname(filePath);
-    res.writeHead(200, {
-      "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
-      "Cache-Control": "no-store",
-    });
+    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": "no-store" });
     res.end(content);
   } catch {
     sendError(res, 404, "页面不存在");
@@ -350,5 +233,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Cloudflare Mail Forge running at http://${HOST}:${PORT}`);
+  console.log(`Cloudflare Mail Forge  →  http://${HOST}:${PORT}`);
 });
