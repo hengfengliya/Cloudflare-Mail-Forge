@@ -95,7 +95,7 @@ export async function listRoutingRules(token, zoneId) {
 
 export function buildRoutingRuleBody({ address, destinationEmail, enabled = true, name, priority = 0 }) {
   return {
-    name: name || `bulk:${address}`,
+    name: name || address,
     enabled,
     priority,
     matchers: [
